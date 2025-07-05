@@ -6,6 +6,9 @@ import { getNetworkConfig, getExplorerUrl } from '@/lib/0g/network';
 import { Blob } from '@0glabs/0g-ts-sdk';
 import { Contract } from 'ethers';
 import { useFileList } from './useFileList';
+import { addFileMeta } from '@/utils/indexeddb';
+import { useFileListContext } from '@/context/FileListContext';
+import { useWallet } from '@/hooks/useWallet';
 
 /**
  * Custom hook for handling file uploads to 0G Storage
@@ -13,6 +16,8 @@ import { useFileList } from './useFileList';
  */
 export function useUpload() {
   const { networkType } = useNetwork();
+  const { currentFolderId } = useFileListContext();
+  const { address: walletAddress } = useWallet();
   const { addFile } = useFileList();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -83,52 +88,48 @@ export function useUpload() {
       console.log('[useUpload] Upload result:', { uploadResult, uploadErr: uploadErr?.message });
       
       if (!uploadResult.success) {
-        throw new Error(`Upload error: ${uploadErr?.message || 'Upload failed'}`);
+        // 더 자세한 에러 메시지 제공
+        let errorMessage = uploadErr?.message || 'Upload failed';
+        
+        // 특정 에러 타입에 대한 사용자 친화적 메시지
+        if (errorMessage.includes('Failed to submit transaction')) {
+          errorMessage = '업로드 중 네트워크 문제가 발생했습니다. 잠시 후 다시 시도해주세요.';
+        } else if (errorMessage.includes('insufficient funds')) {
+          errorMessage = '지갑에 충분한 잔액이 없습니다.';
+        } else if (errorMessage.includes('user rejected')) {
+          errorMessage = '사용자가 거래를 취소했습니다.';
+        } else if (errorMessage.includes('network')) {
+          errorMessage = '네트워크 연결에 문제가 있습니다. 인터넷 연결을 확인해주세요.';
+        }
+        
+        throw new Error(errorMessage);
       }
       
       // Store root hash and already exists flag
       if (uploadResult.rootHash) {
-        setRootHash(uploadResult.rootHash);
+        // preCalculatedRootHash를 우선 사용, 없으면 uploadResult.rootHash 사용
+        const finalRootHash = preCalculatedRootHash || uploadResult.rootHash;
+        setRootHash(finalRootHash);
         setAlreadyExists(uploadResult.alreadyExists);
         
-        // 파일 리스트에 추가 (원본 파일 정보가 있는 경우에만)
-        if (originalFile && !uploadResult.alreadyExists) {
-          try {
-            const name = originalFile.name.substring(0, originalFile.name.lastIndexOf('.'));
-            const fileExtension = originalFile.name.substring(originalFile.name.lastIndexOf('.') + 1);
-            
-            // 미리 계산된 Root Hash가 있으면 사용, 없으면 업로드 결과의 Root Hash 사용
-            const finalRootHash = preCalculatedRootHash || uploadResult.rootHash;
-            
-            await addFile(
-              name,
-              fileExtension,
-              originalFile.size,
-              finalRootHash,
-              networkType
-            );
-            
-            console.log('[useUpload] File added to list successfully with root hash:', finalRootHash);
-          } catch (addFileError) {
-            console.warn('[useUpload] Failed to add file to list:', addFileError);
-            // 파일 리스트 추가 실패는 업로드 성공을 막지 않음
-          }
-        }
+        // 파일 리스트 추가는 UploadModal에서 처리하므로 여기서는 제거
+        // 중복 등록 방지를 위해 useUpload에서는 파일 추가하지 않음
         
         if (uploadResult.alreadyExists) {
-          console.log('[useUpload] File already exists in storage, upload successful with root hash:', uploadResult.rootHash);
+          console.log('[useUpload] File already exists in storage, upload successful with root hash:', finalRootHash);
           setUploadStatus('File already exists in storage - upload successful!');
         } else {
-          console.log('[useUpload] Upload completed successfully with root hash:', uploadResult.rootHash);
+          console.log('[useUpload] Upload completed successfully with root hash:', finalRootHash);
           setUploadStatus('Upload complete!');
         }
       } else {
         console.log('[useUpload] Upload completed successfully but no root hash returned');
-      setUploadStatus('Upload complete!');
+        setUploadStatus('Upload complete!');
       }
       
       console.log('[useUpload] Upload completed successfully!');
-      return uploadResult.rootHash || 'upload-success';
+      // preCalculatedRootHash를 우선 반환
+      return preCalculatedRootHash || uploadResult.rootHash || 'upload-success';
     } catch (error) {
       console.error('[useUpload] Error during upload:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -138,7 +139,7 @@ export function useUpload() {
     } finally {
       setLoading(false);
     }
-  }, [networkType, addFile]);
+  }, [networkType, addFile, currentFolderId, walletAddress]);
 
   // Reset upload state
   const resetUploadState = useCallback(() => {

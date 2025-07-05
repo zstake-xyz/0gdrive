@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-import { encrypt, decrypt } from '@/utils/crypto';
 
 // Item(파일 또는 폴더) 데이터 타입 정의
 interface ItemRecord {
@@ -17,14 +16,33 @@ interface ItemRecord {
   fileSize?: number;
   rootHash?: string;
   networkType?: string;
+
+  // 공유 기능 속성
+  sharedWith?: string[]; // 공유된 지갑 주소 목록
+  sharedBy?: string; // 공유해준 지갑 주소
 }
 
 // 데이터 파일 경로
 const DATA_FILE_PATH = path.join(process.cwd(), 'data', 'files.json');
 
 // Validation constants
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-const ALLOWED_EXTENSIONS = ['.txt', '.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.mp4', '.mp3', '.zip', '.rar'];
+const MAX_FILE_SIZE = 5120 * 1024 * 1024; // 5GB (5120MB)
+const ALLOWED_EXTENSIONS = [
+  // 문서
+  'txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'rtf',
+  // 이미지
+  'jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'tiff', 'tif',
+  // 비디오
+  'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mkv', 'm4v',
+  // 오디오
+  'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a',
+  // 압축
+  'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
+  // 코드/개발
+  'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'scss', 'json', 'xml', 'yaml', 'yml',
+  // 기타
+  'log', 'md', 'sql', 'sh', 'bat', 'ps1', 'py', 'java', 'cpp', 'c', 'h', 'php', 'rb', 'go', 'rs'
+];
 const MAX_NAME_LENGTH = 255;
 
 // Input validation functions
@@ -61,9 +79,7 @@ function readFileData(): ItemRecord[] {
     }
     const data = fs.readFileSync(DATA_FILE_PATH, 'utf-8');
     if (!data) return [];
-    // 복호화 적용
-    const decrypted = decrypt(data);
-    return JSON.parse(decrypted);
+    return JSON.parse(data);
   } catch (error) {
     console.error('Error reading file data:', error);
     return [];
@@ -74,9 +90,7 @@ function readFileData(): ItemRecord[] {
 function writeFileData(data: ItemRecord[]) {
   try {
     ensureDataDirectory();
-    // 암호화 적용
-    const encrypted = encrypt(JSON.stringify(data));
-    fs.writeFileSync(DATA_FILE_PATH, encrypted);
+    fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(data));
   } catch (error) {
     console.error('Error writing file data:', error);
     throw error;
@@ -100,7 +114,8 @@ export async function GET(request: NextRequest) {
 
     const allItems = readFileData();
     const userItems = allItems.filter(item =>
-      item.walletAddress.toLowerCase() === walletAddress.toLowerCase() &&
+      (item.walletAddress.toLowerCase() === walletAddress.toLowerCase() ||
+       (item.sharedWith && item.sharedWith.includes(walletAddress.toLowerCase()))) &&
       item.parentId === parentId
     );
 
@@ -167,9 +182,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Missing file-specific fields' }, { status: 400 });
       }
 
+      console.log('Validating file extension:', fileExtension);
       if (!validateFileExtension(fileExtension)) {
+        console.log('File extension not allowed:', fileExtension);
         return NextResponse.json({ error: 'File extension not allowed' }, { status: 400 });
       }
+      console.log('File extension validated successfully:', fileExtension);
 
       if (!validateFileSize(fileSize)) {
         return NextResponse.json({ error: 'File size exceeds limit' }, { status: 400 });
@@ -207,6 +225,61 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Error in POST /api/files:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH 요청 처리 - 파일 공유 설정
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { itemId, walletAddress, action, targetWalletAddress } = body;
+
+    if (!itemId || !walletAddress || !action || !targetWalletAddress) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    if (!validateWalletAddress(walletAddress) || !validateWalletAddress(targetWalletAddress)) {
+      return NextResponse.json({ error: 'Invalid wallet address format' }, { status: 400 });
+    }
+
+    const allItems = readFileData();
+    const itemIndex = allItems.findIndex(item => 
+      item.id === itemId && 
+      item.walletAddress.toLowerCase() === walletAddress.toLowerCase()
+    );
+
+    if (itemIndex === -1) {
+      return NextResponse.json({ error: 'Item not found or access denied' }, { status: 404 });
+    }
+
+    const item = allItems[itemIndex];
+
+    if (action === 'share') {
+      // 공유 설정
+      if (!item.sharedWith) {
+        item.sharedWith = [];
+      }
+      if (!item.sharedWith.includes(targetWalletAddress.toLowerCase())) {
+        item.sharedWith.push(targetWalletAddress.toLowerCase());
+      }
+    } else if (action === 'unshare') {
+      // 공유 해제
+      if (item.sharedWith) {
+        item.sharedWith = item.sharedWith.filter(addr => addr !== targetWalletAddress.toLowerCase());
+      }
+    } else {
+      return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    writeFileData(allItems);
+    return NextResponse.json({ success: true, item });
+
+  } catch (error) {
+    console.error('Error in PATCH /api/files:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

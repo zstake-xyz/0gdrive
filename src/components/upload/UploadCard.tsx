@@ -20,7 +20,7 @@ export function UploadCard() {
 
   return (
     <FileListProvider>
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-4xl 2.5xl:max-w-[2048px] 3xl:max-w-[2560px] mx-auto px-2 sm:px-4 md:px-6 lg:px-8 xl:px-10 2xl:px-12">
         <UploadModal 
           isOpen={isModalOpen} 
           onClose={handleCloseModal} 

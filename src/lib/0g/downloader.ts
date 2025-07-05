@@ -20,66 +20,149 @@ export async function downloadByRootHashAPI(
       return [null, new Error('Root hash is required')];
     }
     
-    // Construct API URL
-    const apiUrl = `${storageRpc}/file?root=${rootHash}`;
-    console.log(`Downloading from API URL: ${apiUrl}`);
+    // 먼저 프록시를 통해 시도
+    const proxyUrl = `/api/proxy?url=${encodeURIComponent(`${storageRpc}/file?root=${rootHash}`)}`;
+    console.log(`Attempting proxy download from: ${proxyUrl}`);
     
-    // Fetch the file
-    const response = await fetch(apiUrl);
-    
-    // Check if the response content type is JSON before proceeding
-    const contentType = response.headers.get('content-type');
-    const isJsonResponse = contentType && contentType.includes('application/json');
-    
-    // Handle JSON responses separately
-    if (isJsonResponse) {
-      const jsonData = await response.json();
-      console.log('API returned JSON response:', jsonData);
+    try {
+      const proxyResponse = await fetch(proxyUrl);
       
-      // If it's an error response
-      if (!response.ok || jsonData.code) {
-        console.log('API returned JSON error:', jsonData);
-        
-        // Handle specific error codes
-        if (jsonData.code === 101) {
-          // Format root hash to be more display-friendly by keeping first and last few characters
-          const truncatedHash = rootHash.length > 20
-            ? `${rootHash.substring(0, 10)}...${rootHash.substring(rootHash.length - 10)}`
-            : rootHash;
-            
-          return [null, new Error(`File not found: The file with root hash "${truncatedHash}" does not exist in storage or may be on a different network mode`)];
+      if (proxyResponse.ok) {
+        // 프록시 성공 시 스트림 방식으로 처리
+        if (proxyResponse.body && window.ReadableStream) {
+          const reader = proxyResponse.body.getReader();
+          const chunks = [];
+          let receivedLength = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            receivedLength += value.length;
+          }
+          let chunksAll = new Uint8Array(receivedLength);
+          let position = 0;
+          for (let chunk of chunks) {
+            chunksAll.set(chunk, position);
+            position += chunk.length;
+          }
+          const fileData = chunksAll.buffer;
+          if (fileData && fileData.byteLength > 0) {
+            console.log(`Proxy download successful, received ${fileData.byteLength} bytes`);
+            return [fileData, null];
+          }
         }
         
-        // For other JSON errors, use the message from the response
-        return [null, new Error(`Download failed: ${jsonData.message || 'Unknown error'}`)];
+        // fallback: arrayBuffer 방식
+        const fileData = await proxyResponse.arrayBuffer();
+        if (fileData && fileData.byteLength > 0) {
+          console.log(`Proxy download successful, received ${fileData.byteLength} bytes`);
+          return [fileData, null];
+        }
+      } else {
+        console.log(`Proxy failed with status ${proxyResponse.status}, trying direct connection...`);
       }
+    } catch (proxyError) {
+      console.log(`Proxy error: ${proxyError}, trying direct connection...`);
+    }
+    
+    // 프록시 실패 시 직접 연결 시도 (CORS 우회)
+    console.log(`Attempting direct download from: ${storageRpc}/file?root=${rootHash}`);
+    
+    // 브라우저에서 직접 외부 서버에 연결할 수 없으므로, 
+    // 다른 방법으로 시도: 프록시 없이 직접 fetch
+    const directUrl = `${storageRpc}/file?root=${rootHash}`;
+    
+    // CORS 문제를 우회하기 위해 다른 접근 방법 시도
+    // 1. JSONP 방식으로 시도 (서버가 지원하는 경우)
+    try {
+      const jsonpResponse = await fetch(directUrl, {
+        method: 'GET',
+        mode: 'cors',
+        headers: {
+          'Accept': '*/*',
+          'User-Agent': '0G-Storage-Web/1.0'
+        }
+      });
       
-      // If it's a successful JSON response but not a file, it's unexpected
-      if (!response.ok) {
-        return [null, new Error(`Unexpected response format: expected file but got JSON data`)];
+      if (jsonpResponse.ok) {
+        const fileData = await jsonpResponse.arrayBuffer();
+        if (fileData && fileData.byteLength > 0) {
+          console.log(`Direct download successful, received ${fileData.byteLength} bytes`);
+          return [fileData, null];
+        }
+      }
+    } catch (directError) {
+      console.log(`Direct connection failed: ${directError}`);
+    }
+    
+    // 2. 마지막 방법: 프록시를 다시 시도하되 더 긴 타임아웃으로
+    console.log(`Retrying proxy with longer timeout...`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 600000); // 10분 타임아웃
+    
+    try {
+      const retryResponse = await fetch(proxyUrl, {
+        signal: controller.signal,
+        headers: {
+          'Accept': '*/*',
+          'User-Agent': '0G-Storage-Web/1.0'
+        }
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (retryResponse.ok) {
+        const fileData = await retryResponse.arrayBuffer();
+        if (fileData && fileData.byteLength > 0) {
+          console.log(`Retry download successful, received ${fileData.byteLength} bytes`);
+          return [fileData, null];
+        }
+      } else {
+        // JSON 에러 응답인지 확인
+        const contentType = retryResponse.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const errorData = await retryResponse.json();
+            console.log('Retry returned JSON error:', errorData);
+            
+            if (errorData.error === 'External server error') {
+              if (errorData.status === 504) {
+                return [null, new Error('서버 타임아웃 - 파일이 너무 크거나 서버가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요.')];
+              }
+              return [null, new Error(errorData.message || `파일을 찾을 수 없거나 서버 오류 (${errorData.status})`)];
+            } else {
+              if (errorData.isTimeout) {
+                return [null, new Error('요청 타임아웃 - 파일이 너무 크거나 서버가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요.')];
+              }
+              return [null, new Error(`프록시 오류: ${errorData.error} - ${errorData.details || ''}`)];
+            }
+          } catch (jsonError) {
+            return [null, new Error(`다운로드 실패 (상태 ${retryResponse.status}): 잘못된 오류 응답`)];
+          }
+        } else {
+          const errorText = await retryResponse.text();
+          console.log(`Retry error text: ${errorText}`);
+          
+          if (retryResponse.status === 504) {
+            return [null, new Error('서버 타임아웃 - 파일이 너무 크거나 서버가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요.')];
+          }
+          return [null, new Error(`다운로드 실패 (상태 ${retryResponse.status}): ${errorText}`)];
+        }
+      }
+    } catch (retryError) {
+      clearTimeout(timeoutId);
+      console.log(`Retry failed: ${retryError}`);
+      
+      if (retryError instanceof Error && retryError.name === 'AbortError') {
+        return [null, new Error('다운로드 타임아웃 - 파일이 너무 크거나 서버가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요.')];
       }
     }
     
-    // Handle non-JSON responses
-    if (!response.ok) {
-      // For non-JSON errors, use the text response
-      const errorText = await response.text();
-      console.log(`API error (${response.status}): ${errorText}`);
-      return [null, new Error(`Download failed with status ${response.status}: ${errorText}`)];
-    }
+    // 모든 방법 실패
+    return [null, new Error('파일을 다운로드할 수 없습니다. 파일이 존재하지 않거나 서버에 문제가 있을 수 있습니다.')];
     
-    // Get file data as ArrayBuffer
-    const fileData = await response.arrayBuffer();
-    
-    if (!fileData || fileData.byteLength === 0) {
-      console.log('Downloaded file data is empty');
-      return [null, new Error('Downloaded file is empty')];
-    }
-    
-    console.log(`API Download successful, received ${fileData.byteLength} bytes`);
-    return [fileData, null];
   } catch (error) {
-    console.log('Error in downloadByRootHashAPI:', error);
+    console.error('API Download error:', error);
     return [null, error instanceof Error ? error : new Error(String(error))];
   }
 }

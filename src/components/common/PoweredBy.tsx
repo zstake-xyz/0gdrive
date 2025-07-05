@@ -12,8 +12,14 @@ export function PoweredBy() {
         rel="noopener noreferrer"
         className="inline-block"
       >
-        <div className="bg-gray-800 text-white text-xs font-bold py-2 px-3 rounded-full shadow-lg hover:bg-gray-700 transition-colors duration-300">
-          Powered by Stv
+        <div className="bg-gray-800 text-white text-xs font-bold py-2 px-3 rounded-full shadow-lg hover:bg-gray-700 transition-colors duration-300 flex items-center gap-2">
+          <img
+            src="https://pbs.twimg.com/profile_images/1936831646948618240/dtxhQGI-_400x400.jpg"
+            alt="stv avatar"
+            className="w-6 h-6 rounded-full bg-white border border-gray-300 object-cover"
+            style={{ display: 'inline-block' }}
+          />
+          <span>Powered by <span className="font-bold">Stv</span></span>
         </div>
       </a>
     </div>

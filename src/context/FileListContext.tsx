@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useWallet } from '@/hooks/useWallet';
+import { useIndexedDB } from '@/hooks/useIndexedDB';
 
 export interface Item {
   id: string;
@@ -14,6 +15,8 @@ export interface Item {
   fileSize?: number;
   rootHash?: string;
   networkType?: string;
+  sharedWith?: string[];
+  sharedBy?: string;
 }
 
 export interface Breadcrumb {
@@ -28,49 +31,22 @@ interface FileListContextType {
   breadcrumbs: Breadcrumb[];
   currentFolderId: string | null;
   navigateToFolder: (folderId: string | null) => Promise<void>;
-  addFile: (name: string, fileExtension: string, fileSize: number, rootHash: string, networkType: string) => Promise<Item>;
+  addFile: (meta: Item) => Promise<void>;
   addFolder: (name: string) => Promise<Item>;
   deleteItem: (itemId: string) => Promise<boolean>;
   updateItem: (itemId: string, { name, parentId }: { name?: string, parentId?: string | null }) => Promise<Item>;
   formatFileSize: (bytes?: number) => string;
   formatDate: (dateString: string) => string;
-  refresh: () => void;
+  refresh: (parentId?: string | null) => void;
 }
 
 const FileListContext = createContext<FileListContextType | undefined>(undefined);
 
 export function FileListProvider({ children }: { children: ReactNode }) {
   const { address } = useWallet();
-  const [items, setItems] = useState<Item[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([{ id: null, name: 'Home' }]);
-
-  const fetchItems = useCallback(async (folderId: string | null) => {
-    if (!address) {
-      setItems([]);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const url = `/api/files?walletAddress=${address}&parentId=${folderId || ''}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`Failed to fetch items: ${response.statusText}`);
-      const data = await response.json();
-      setItems(data.items || []);
-    } catch (err) {
-      console.error('Error fetching items:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch items');
-    } finally {
-      setLoading(false);
-    }
-  }, [address]);
-  
-  const refresh = useCallback(() => {
-    fetchItems(currentFolderId);
-  }, [fetchItems, currentFolderId]);
+  const { files: items, loading, error, addFile, updateFile, deleteFile, refresh } = useIndexedDB(address ?? '');
 
   const navigateToFolder = useCallback(async (folderId: string | null) => {
     if (folderId === currentFolderId) return;
@@ -78,88 +54,89 @@ export function FileListProvider({ children }: { children: ReactNode }) {
     if (folderId === null) {
       setBreadcrumbs([{ id: null, name: 'Home' }]);
     } else {
-      try {
-        const response = await fetch(`/api/files/${folderId}?walletAddress=${address}`);
-        if (!response.ok) throw new Error('Failed to fetch folder details');
-        const { item } = await response.json();
-        
-        const newBreadcrumbs = [...breadcrumbs];
-        const existingIndex = newBreadcrumbs.findIndex(b => b.id === folderId);
-
-        if (existingIndex !== -1) {
-          newBreadcrumbs.splice(existingIndex + 1);
-        } else {
-          newBreadcrumbs.push({ id: item.id, name: item.name });
-        }
-        setBreadcrumbs(newBreadcrumbs);
-      } catch (err) {
-        console.error("Navigation error:", err);
+      // IndexedDB에서 폴더 정보 직접 조회
+      const folder = items.find(i => i.id === folderId && i.type === 'folder');
+      if (!folder) {
         setBreadcrumbs([{ id: null, name: 'Home' }]);
         setCurrentFolderId(null);
         return;
       }
+      const newBreadcrumbs = [...breadcrumbs];
+      const existingIndex = newBreadcrumbs.findIndex(b => b.id === folderId);
+      if (existingIndex !== -1) {
+        newBreadcrumbs.splice(existingIndex + 1);
+      } else {
+        newBreadcrumbs.push({ id: folder.id, name: folder.name });
+      }
+      setBreadcrumbs(newBreadcrumbs);
     }
     setCurrentFolderId(folderId);
-  }, [currentFolderId, address, breadcrumbs]);
+    // 폴더 변경 시 해당 폴더의 파일들을 다시 로드
+    await refresh(folderId);
+  }, [currentFolderId, items, breadcrumbs, refresh]);
 
-  const addFile = useCallback(async (name: string, fileExtension: string, fileSize: number, rootHash: string, networkType: string) => {
-    if (!address) throw new Error('Wallet not connected');
-    const response = await fetch('/api/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ walletAddress: address, type: 'file', name, parentId: currentFolderId, fileExtension, fileSize, rootHash, networkType }),
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to add file');
-    }
-    const data = await response.json();
-    refresh();
-    return data.item;
-  }, [address, currentFolderId, refresh]);
-  
   const addFolder = useCallback(async (name: string) => {
     if (!address) throw new Error('Wallet not connected');
-    const response = await fetch('/api/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ walletAddress: address, type: 'folder', name, parentId: currentFolderId }),
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to create folder');
-    }
-    const data = await response.json();
-    refresh();
-    return data.item;
-  }, [address, currentFolderId, refresh]);
+    const folder: Item = {
+      id: crypto.randomUUID(),
+      type: 'folder',
+      name,
+      parentId: currentFolderId,
+      walletAddress: address,
+      uploadDate: new Date().toISOString(),
+      sharedWith: [],
+    };
+    await addFile(folder);
+    // addFile 내부에서 이미 refresh를 호출하므로 중복 제거
+    return folder;
+  }, [address, currentFolderId, addFile]);
   
   const deleteItem = useCallback(async (itemId: string) => {
     if (!address) throw new Error('Wallet not connected');
-    const response = await fetch(`/api/files?id=${itemId}&walletAddress=${address}`, { method: 'DELETE' });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to delete item');
-    }
-    refresh();
+    await deleteFile(itemId, currentFolderId);
+    // deleteFile 내부에서 이미 refresh를 호출하므로 중복 제거
     return true;
-  }, [address, refresh]);
+  }, [address, currentFolderId, deleteFile]);
   
   const updateItem = useCallback(async (itemId: string, { name, parentId }: { name?: string, parentId?: string | null }) => {
     if (!address) throw new Error('Wallet not connected');
-    const response = await fetch(`/api/files/${itemId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ walletAddress: address, name, parentId }),
+    const item = items.find(i => i.id === itemId);
+    if (!item) throw new Error('Item not found');
+    
+    const updated = { ...item, name: name ?? item.name, parentId: parentId ?? item.parentId };
+    console.log('[FileListContext] Updating item:', { 
+      itemId, 
+      oldParentId: item.parentId, 
+      newParentId: updated.parentId,
+      name: updated.name,
+      currentFolderId
     });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to update item');
+    
+    await updateFile(updated);
+    
+    // parentId가 변경된 경우 (파일 이동)
+    if (parentId !== undefined && parentId !== item.parentId) {
+      console.log('[FileListContext] ParentId changed - file moved');
+      
+      // 현재 폴더가 이동 전 폴더인 경우 현재 폴더를 refresh
+      if (currentFolderId === item.parentId) {
+        console.log('[FileListContext] Current folder is the old parent, refreshing current folder');
+        await refresh(currentFolderId);
+      }
+      
+      // 파일이 폴더로 이동된 경우, 자동으로 해당 폴더로 이동
+      if (parentId !== null) {
+        console.log('[FileListContext] Auto-navigating to destination folder:', parentId);
+        await navigateToFolder(parentId);
+      } else {
+        // 파일이 홈으로 이동된 경우, 홈으로 이동
+        console.log('[FileListContext] Auto-navigating to home');
+        await navigateToFolder(null);
+      }
     }
-    refresh();
-    const data = await response.json();
-    return data.item;
-  }, [address, refresh]);
+    
+    return updated;
+  }, [address, items, updateFile, refresh, currentFolderId, navigateToFolder]);
 
   const formatFileSize = useCallback((bytes?: number): string => {
     if (!bytes) return '0 Bytes';
@@ -177,13 +154,14 @@ export function FileListProvider({ children }: { children: ReactNode }) {
   
   useEffect(() => {
     if (address) {
-      fetchItems(currentFolderId);
+      // useIndexedDB에서 이미 지갑 변경 시 자동으로 refresh하므로 중복 제거
+      console.log('[FileListContext] 지갑 연결됨:', address);
     } else {
-      setItems([]);
       setBreadcrumbs([{ id: null, name: 'Home' }]);
       setCurrentFolderId(null);
+      console.log('[FileListContext] 지갑 연결 해제됨');
     }
-  }, [address, currentFolderId, fetchItems]);
+  }, [address]);
 
   const value = {
     items, loading, error, breadcrumbs, currentFolderId, navigateToFolder,

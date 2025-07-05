@@ -7,6 +7,8 @@ import { FileDropzone } from '@/components/common/FileDropzone';
 import { FileInfo } from '@/components/common/FileInfo';
 import { FeeDisplay } from '@/components/common/FeeDisplay';
 import { TransactionStatus } from '@/components/common/TransactionStatus';
+import { addFileMeta } from '@/utils/indexeddb';
+import { useFileListContext } from '@/context/FileListContext';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -21,7 +23,8 @@ interface FileInfoState {
 }
 
 export function UploadModal({ isOpen, onClose }: UploadModalProps) {
-  const { isConnected } = useWallet();
+  const { isConnected, address: walletAddress } = useWallet();
+  const { currentFolderId, refresh } = useFileListContext();
   const [fileInfo, setFileInfo] = useState<FileInfoState | null>(null);
   const { feeInfo, error: feeError, rootHash: feeRootHash, submission, flowContract, calculateFeesForFile, blob } = useFees();
   const { loading: uploadLoading, error: uploadError, uploadStatus, txHash, rootHash, alreadyExists, uploadFile, resetUploadState } = useUpload();
@@ -39,10 +42,54 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
     resetUploadState();
   };
 
-  const handleUpload = async () => {
-    if (!blob || !feeInfo || !fileInfo?.originalFile) return;
-    await uploadFile(blob, submission, flowContract, feeInfo.rawTotalFee, fileInfo.originalFile, feeRootHash);
-  };
+  async function handleUpload() {
+    if (!blob || !feeInfo || !fileInfo?.originalFile || !submission || !flowContract) {
+      console.error('[UploadModal] Missing required data for upload:', { blob: !!blob, feeInfo: !!feeInfo, file: !!fileInfo?.originalFile, submission: !!submission, flowContract: !!flowContract });
+      return;
+    }
+
+    console.log('[UploadModal] Starting upload with contract interaction...');
+    console.log('[UploadModal] Pre-calculated root hash:', feeRootHash);
+    
+    try {
+      // 실제 0G Storage에 업로드 (메타마스크 사인 포함)
+      const uploadResult = await uploadFile(
+        blob,
+        submission,
+        flowContract,
+        feeInfo.rawStorageFee,
+        fileInfo.originalFile,
+        feeRootHash
+      );
+
+      if (uploadResult) {
+        console.log('[UploadModal] Upload successful, result:', uploadResult);
+        
+        // IndexedDB에 메타데이터 저장 - feeRootHash 사용
+        const meta = {
+          id: crypto.randomUUID(),
+          name: fileInfo.originalFile.name,
+          type: 'file' as const,
+          parentId: currentFolderId,
+          walletAddress: walletAddress ?? '',
+          uploadDate: new Date().toISOString(),
+          fileExtension: fileInfo.originalFile.name.split('.').pop(),
+          fileSize: fileInfo.originalFile.size,
+          rootHash: feeRootHash || uploadResult, // feeRootHash를 우선 사용
+          networkType: 'standard',
+        };
+        
+        await addFileMeta(meta);
+        console.log('[UploadModal] File metadata saved to IndexedDB:', meta);
+        
+        // 파일리스트 갱신
+        await refresh(currentFolderId);
+        console.log('[UploadModal] File list refreshed');
+      }
+    } catch (error) {
+      console.error('[UploadModal] Upload failed:', error);
+    }
+  }
 
   useEffect(() => {
     if (!isOpen) {
@@ -114,6 +161,23 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
           {uploadError && !uploadStatus && (
             <div className="mt-4 p-3 bg-red-100 border border-red-200 rounded-lg">
               <p className="text-sm text-red-700">{uploadError}</p>
+              <button 
+                onClick={handleUpload} 
+                disabled={uploadLoading}
+                className="mt-2 w-full py-2 px-4 rounded-lg font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 flex items-center justify-center transition-colors"
+              >
+                {uploadLoading ? (
+                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                  </svg>
+                )}
+                {uploadLoading ? '재시도 중...' : '다시 시도'}
+              </button>
             </div>
           )}
         </div>

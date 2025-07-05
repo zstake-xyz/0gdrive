@@ -30,6 +30,23 @@ const config: Config = {
         'brand-surface': '#ffffff',
         'brand-border': '#e9d5ff', // purple-200
       },
+      // screens 확장
+      screens: {
+        'xs': '475px',
+        'sm': '640px',
+        'md': '768px',
+        'lg': '1024px',
+        'xl': '1280px',
+        '2xl': '1536px',
+        '2.5xl': '2048px',
+        '3xl': '2560px',
+        // 추가 세분화된 브레이크포인트
+        '1440': '1440px',
+        '1600': '1600px',
+        '1920': '1920px',
+        '2048': '2048px',
+        '2560': '2560px',
+      },
       animation: {
         'fade-in-up': 'fadeInUp 0.5s ease-out forwards',
       },

@@ -9,7 +9,12 @@ export const metadata: Metadata = {
   title: "0G Drive",
   description: "0G Drive - Decentralized Storage Solution",
   icons: {
-    icon: '/logo.png',
+    icon: [
+      { url: '/logo.png', type: 'image/png', sizes: '32x32' },
+      { url: '/logo.png', type: 'image/png', sizes: '16x16' }
+    ],
+    shortcut: '/logo.png',
+    apple: '/logo.png',
   },
 };
 

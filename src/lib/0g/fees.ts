@@ -82,10 +82,16 @@ export async function calculateFees(
     // Estimate gas
     let gasEstimate;
     try {
-      gasEstimate = await flowContract.submit.estimateGas(submission, { value: storageFee });
+      // 더 높은 gas price로 estimate 시도
+      const higherGasPrice = gasPrice * BigInt(5); // 5배 높은 gas price
+      gasEstimate = await flowContract.submit.estimateGas(submission, { 
+        value: storageFee,
+        gasPrice: higherGasPrice
+      });
     } catch (error) {
-      // Use fallback gas estimate
-      gasEstimate = BigInt(500000); // Fallback gas estimate
+      console.warn('[calculateFees] Gas estimation failed, using fallback:', error);
+      // Use fallback gas estimate - 더 높은 값으로 설정
+      gasEstimate = BigInt(2000000); // 2M gas로 증가
     }
     
     // Calculate estimated gas fee and total fee

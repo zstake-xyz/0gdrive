@@ -15,24 +15,11 @@ function getSecretKey(): string {
   return key;
 }
 
+// 암호화/복호화 없이 평문 반환
 export function encrypt(text: string): string {
-  const secretKey = getSecretKey();
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(secretKey), iv);
-  let encrypted = cipher.update(text, 'utf8', 'base64');
-  encrypted += cipher.final('base64');
-  return iv.toString('base64') + ':' + encrypted;
+  return text;
 }
 
 export function decrypt(encrypted: string): string {
-  const secretKey = getSecretKey();
-  const [ivStr, encText] = encrypted.split(':');
-  if (!ivStr || !encText) {
-    throw new Error('Invalid encrypted data format');
-  }
-  const iv = Buffer.from(ivStr, 'base64');
-  const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(secretKey), iv);
-  let decrypted = decipher.update(encText, 'base64', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  return encrypted;
 } 
